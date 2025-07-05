@@ -1,0 +1,239 @@
+name: Daily Android APK Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      refs:
+        description: "Comma-separated refs for sing-box (e.g., main,dev-next)"
+        default: "main,main-next,dev-next"
+  schedule:
+    - cron: '0 0 * * *' # Runs at 0:00 UTC every day
+
+env:
+  DEFAULT_WORKSPACE_DIR: workspace
+
+jobs:
+  prepare-android-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.generate.outputs.matrix }}
+    steps:
+      - id: generate
+        name: Generate and Validate Android Build Matrix
+        run: |
+          set -e
+          FINAL_MATRIX_JSON="[]"
+
+          # --- Android Build Configuration ---
+          # Format (semicolon-separated):
+          # 1. Git Repo URL         (repo_url)
+          # 2. Go Version           (go_ver)
+          # 3. NDK Version          (ndk_ver)
+          # 4. JDK Version          (jdk_ver)
+          # 5. Android Client Path  (client_path)
+          # 6. Lib Install Command  (lib_install_cmd) - e.g., 'make lib_install'
+          # 7. Lib Build Command    (lib_build_cmd) - e.g., 'make lib_android'
+          # 8. Output AAR Name      (aar_name)
+          # 9. Version Update Cmd   (version_update_cmd) - Command to sync version into Android project
+          # 10. Gradle Build Tasks  (gradle_task) - e.g., ':app:assembleRelease'
+          declare -A REPOS
+          REPOS["sing-box"]="https://github.com/SagerNet/sing-box.git;1.24.4;r28;17;clients/android;make lib_install && export PATH="$PATH:$(go env GOPATH)/bin";make lib_android;libbox.aar;go run ./cmd/internal/update_android_version --ci --nightly;:app:assemblePlayRelease :app:assembleOtherRelease"
+          # Add other repositories here if needed.
+
+          declare -A DEFAULT_REFS
+          DEFAULT_REFS["sing-box"]="main,main-next,dev-next"
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            CHECK_REFS="${{ inputs.refs }}"
+          else
+            CHECK_REFS=""
+          fi
+
+          for repo_name in "${!REPOS[@]}"; do
+            IFS=';' read -r repo_url go_ver ndk_ver jdk_ver client_path lib_install_cmd lib_build_cmd aar_name version_update_cmd gradle_task <<< "${REPOS[$repo_name]}"
+
+            if [[ "${{ github.event_name }}" != "workflow_dispatch" ]]; then
+              CHECK_REFS="${DEFAULT_REFS[$repo_name]}"
+            fi
+
+            IFS=',' read -ra refs_to_check <<< "$CHECK_REFS"
+
+            for ref in "${refs_to_check[@]}"; do
+              echo "Checking if ref '$ref' exists in repo '$repo_name'..."
+              if git ls-remote --exit-code --heads --tags "$repo_url" "$ref" >/dev/null 2>&1; then
+                echo "  -> Ref '$ref' found. Adding to matrix."
+
+                VALID_COMBO=$(jq -n \
+                  --arg rn "$repo_name" --arg rurl "$repo_url" \
+                  --arg gv "$go_ver" --arg nv "$ndk_ver" --arg jv "$jdk_ver" \
+                  --arg cp "$client_path" --arg lic "$lib_install_cmd" --arg lbc "$lib_build_cmd" \
+                  --arg an "$aar_name" --arg vuc "$version_update_cmd" --arg gt "$gradle_task" \
+                  --arg r "$ref" \
+                  '{
+                    repo: $rn, repo_url: $rurl, build_go_version: $gv,
+                    build_ndk_version: $nv, build_jdk_version: $jv,
+                    client_path: $cp, lib_install_cmd: $lic, lib_build_cmd: $lbc,
+                    aar_name: $an, version_update_cmd: $vuc, gradle_task: $gt,
+                    ref: $r
+                  }'
+                )
+                FINAL_MATRIX_JSON=$(echo "$FINAL_MATRIX_JSON" | jq -c ". += [$VALID_COMBO]")
+              else
+                echo "  -> Ref '$ref' NOT found. Skipping."
+              fi
+            done
+          done
+
+          echo "Final Generated Matrix:"
+          echo "$FINAL_MATRIX_JSON" | jq .
+          echo "matrix=$FINAL_MATRIX_JSON" >> "$GITHUB_OUTPUT"
+
+  build-apk:
+    needs: prepare-android-matrix
+    name: 📦 Build Android ${{ matrix.repo }} | ${{ matrix.ref }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.prepare-android-matrix.outputs.matrix) }}
+    steps:
+      - name: Extract Owner/Repo from URL
+        id: extract_repo
+        run: |
+          REPO_URL="${{ matrix.repo_url }}"
+          OWNER_REPO="${REPO_URL#https://github.com/}"
+          OWNER_REPO="${OWNER_REPO%.git}"
+          echo "owner_repo=${OWNER_REPO}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.extract_repo.outputs.owner_repo }}
+          ref: ${{ matrix.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+          submodules: 'recursive'
+      
+      - name: Align android client branch
+        if: ${{ steps.extract_repo.outputs.owner_repo }} == "SagerNet/sing-box"
+        run: |
+          set -eux
+          case "${{ matrix.ref }}" in
+            dev-next)
+              git -C clients/android fetch origin dev
+              git -C clients/android checkout dev
+              ;;
+            main-next|main)
+              git -C clients/android fetch origin main
+              git -C clients/android checkout main
+              ;;
+            *)
+              # default
+              ;;
+          esac
+      
+      - name: Strip wireguard / tailscale build-tags
+        run: |
+          set -euo pipefail
+          FILE=cmd/internal/build_libbox/main.go
+          sed -i \
+            -e 's/"with_wireguard",[[:space:]]*//g' \
+            -e '/memcTags.*with_tailscale/ s/^/\/\/ /' \
+            "$FILE"
+          grep -q '"with_wireguard"' "$FILE" && { echo "::error::wireguard tag still present"; exit 1; }
+          echo "✔️ sed patch applied to $FILE"
+          
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.build_go_version }}
+          cache-dependency-path: "**/go.sum"
+
+      - name: Setup Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ matrix.build_ndk_version }}
+
+      - name: Setup OpenJDK
+        run: |
+          sudo apt update && sudo apt install -y openjdk-${{ matrix.build_jdk_version }}-jdk-headless
+          /usr/lib/jvm/java-${{ matrix.build_jdk_version }}-openjdk-amd64/bin/java --version
+
+      - name: Gradle Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+
+      - name: Install Custom Go Mobile Tools
+        if: ${{ matrix.lib_install_cmd != '' }}
+        run: ${{ matrix.lib_install_cmd }}
+
+      - name: Build Go Library (.aar)
+        run: ${{ matrix.lib_build_cmd }}
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-${{ matrix.build_jdk_version }}-openjdk-amd64
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+
+      # - name: Update Android Version
+      #   if: ${{ matrix.version_update_cmd != '' }}
+      #   run: ${{ matrix.version_update_cmd }}
+
+      - name: Decode Keystore and Setup Properties
+        run: |
+          echo "--> Decoding Keystore..."
+          echo -n "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 --decode > ${{ matrix.client_path }}/app/release.keystore
+          echo "--> Creating local.properties..."
+          echo -n "${{ secrets.LOCAL_PROPERTIES }}" | base64 --decode > ${{ matrix.client_path }}/local.properties
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          LOCAL_PROPERTIES: ${{ secrets.LOCAL_PROPERTIES }}
+          
+      - name: Build Android APK
+        id: build_apk
+        run: |
+          set -eux
+          CLIENT_DIR="${{ matrix.client_path }}"
+          AAR_FILE="${{ matrix.aar_name }}"
+          
+          echo "--> Moving .aar library to Android project..."
+          mkdir -p "${CLIENT_DIR}/app/libs"
+          mv "${AAR_FILE}" "${CLIENT_DIR}/app/libs/"
+          
+          echo "--> Building APK with Gradle..."
+          cd "${CLIENT_DIR}"
+          chmod +x ./gradlew
+          ./gradlew ${{ matrix.gradle_task }}
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-${{ matrix.build_jdk_version}}-openjdk-amd64
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          LOCAL_PROPERTIES: ${{ secrets.LOCAL_PROPERTIES }}
+
+      - name: Prepare upload
+        run: |
+          mkdir -p dist
+          cp ${{ matrix.client_path }}/app/build/outputs/apk/play/release/*.apk dist
+          cp ${{ matrix.client_path }}/app/build/outputs/apk/other/release/*-universal.apk dist
+          cd dist
+          for f in SFA-*.apk; do
+            case "$f" in
+              *-arm64-v8a.apk)      ARCH="arm64-v8a"      ;;
+              *-armeabi-v7a.apk)    ARCH="armeabi-v7a"    ;;
+              *-x86_64.apk)         ARCH="x86_64"         ;;
+              *-x86.apk)            ARCH="x86"            ;;
+              *-universal.apk)      ARCH="universal"      ;;
+              *-foss-universal.apk) ARCH="foss-universal" ;;
+              *) echo "skip $f"; continue ;;
+            esac
+            mv "$f" "${{ matrix.repo}}-${{matrix.ref}}-${ARCH}.apk"
+          done
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.repo }}-${{ matrix.ref }}-android
+          path: 'dist'
+          if-no-files-found: error
+          retention-days: 1
