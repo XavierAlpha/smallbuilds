@@ -37,7 +37,7 @@ jobs:
           # 9. Version Update Cmd   (version_update_cmd) - Command to sync version into Android project
           # 10. Gradle Build Tasks  (gradle_task) - e.g., ':app:assembleRelease'
           declare -A REPOS
-          REPOS["sing-box"]="https://github.com/SagerNet/sing-box.git;1.24.4;r28;17;clients/android;make lib_install && export PATH="$PATH:$(go env GOPATH)/bin";make lib_android;libbox.aar;go run ./cmd/internal/update_android_version --ci --nightly;:app:assemblePlayRelease :app:assembleOtherRelease"
+          REPOS["sing-box"]="https://github.com/SagerNet/sing-box.git;1.24.5;r28;17;clients/android;make lib_install && export PATH="$PATH:$(go env GOPATH)/bin";make lib_android;libbox.aar;go run ./cmd/internal/update_android_version --ci --nightly;:app:assemblePlayRelease :app:assembleOtherRelease"
           # Add other repositories here if needed.
 
           declare -A DEFAULT_REFS
