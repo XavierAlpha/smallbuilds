@@ -38,8 +38,8 @@ jobs:
           # 注意：如果某一项没有值，请保留分号以作占位，例如 `...;ldflags_val;;target_val` 表示 tags 为空。
           
           declare -A REPOS
-          REPOS["sing-box"]="https://github.com/sagernet/sing-box.git;1.24.4;-X github.com/sagernet/sing-box/constant.Version=\${REPO_TAG};with_gvisor,with_quic,with_utls,with_clash_api;./cmd/sing-box"
-          REPOS["xray-core"]="https://github.com/XTLS/Xray-core.git;1.24.4;-X github.com/xtls/xray-core/core.build=\${REPO_SHORT_SHA};;./main"
+          REPOS["sing-box"]="https://github.com/sagernet/sing-box.git;1.24.5;-X github.com/sagernet/sing-box/constant.Version=\${REPO_TAG};with_gvisor,with_quic,with_utls,with_clash_api;./cmd/sing-box"
+          REPOS["xray-core"]="https://github.com/XTLS/Xray-core.git;1.24.5;-X github.com/xtls/xray-core/core.build=\${REPO_SHORT_SHA};;./main"
 
           declare -A DEFAULT_REFS
           DEFAULT_REFS["sing-box"]="main,dev-next,main-next"
