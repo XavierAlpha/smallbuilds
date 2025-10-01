@@ -38,10 +38,12 @@ jobs:
           # 10. Gradle Build Tasks  (gradle_task) - e.g., ':app:assembleRelease'
           declare -A REPOS
           REPOS["sing-box"]="https://github.com/SagerNet/sing-box.git;1.25;r28;17;clients/android;make lib_install && export PATH="$PATH:$(go env GOPATH)/bin";make lib_android;libbox.aar;go run ./cmd/internal/update_android_version --ci --nightly;:app:assemblePlayRelease :app:assembleOtherRelease"
+          REPOS["sing-box-custom"]="https://github.com/XavierAlpha/sing-box.git;1.25;r28;17;clients/android;make lib_install && export PATH="$PATH:$(go env GOPATH)/bin";make lib_android;libbox.aar;go run ./cmd/internal/update_android_version --ci --nightly;:app:assemblePlayRelease :app:assembleOtherRelease"
           # Add other repositories here if needed.
 
           declare -A DEFAULT_REFS
           DEFAULT_REFS["sing-box"]="main,main-next,dev-next"
+          DEFAULT_REFS["sing-box-custom"]="main-next"
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             CHECK_REFS="${{ inputs.refs }}"
@@ -106,7 +108,7 @@ jobs:
           echo "owner_repo=${OWNER_REPO}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout Source Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ steps.extract_repo.outputs.owner_repo }}
           ref: ${{ matrix.ref }}
@@ -115,7 +117,7 @@ jobs:
           submodules: 'recursive'
       
       - name: Align android client branch
-        if: ${{ steps.extract_repo.outputs.owner_repo }} == "SagerNet/sing-box"
+        if: ${{ steps.extract_repo.outputs.owner_repo }} == "SagerNet/sing-box" || ${{ steps.extract_repo.outputs.owner_repo }} == "XavierAlpha/sing-box"
         run: |
           set -eux
           case "${{ matrix.ref }}" in
