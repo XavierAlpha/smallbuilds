@@ -37,8 +37,8 @@ jobs:
           # 9. Version Update Cmd   (version_update_cmd) - Command to sync version into Android project
           # 10. Gradle Build Tasks  (gradle_task) - e.g., ':app:assembleRelease'
           declare -A REPOS
-          REPOS["sing-box"]="https://github.com/SagerNet/sing-box.git;1.25;r28;17;clients/android;make lib_install && export PATH="$PATH:$(go env GOPATH)/bin";make lib_android;libbox.aar;go run ./cmd/internal/update_android_version --ci --nightly;:app:assemblePlayRelease :app:assembleOtherRelease"
-          REPOS["sing-box-custom"]="https://github.com/XavierAlpha/sing-box.git;1.25;r28;17;clients/android;make lib_install && export PATH="$PATH:$(go env GOPATH)/bin";make lib_android;libbox.aar;go run ./cmd/internal/update_android_version --ci --nightly;:app:assemblePlayRelease :app:assembleOtherRelease"
+          REPOS["sing-box"]="https://github.com/SagerNet/sing-box.git;1.25;r28;17;clients/android;make lib_install && export PATH="$PATH:$(go env GOPATH)/bin";make lib_android;*.aar;go run ./cmd/internal/update_android_version --ci --nightly;:app:assemblePlayRelease :app:assembleOtherRelease"
+          REPOS["sing-box-custom"]="https://github.com/XavierAlpha/sing-box.git;1.25;r28;17;clients/android;make lib_install && export PATH="$PATH:$(go env GOPATH)/bin";make lib_android;*.aar;go run ./cmd/internal/update_android_version --ci --nightly;:app:assemblePlayRelease :app:assembleOtherRelease"
           # Add other repositories here if needed.
 
           declare -A DEFAULT_REFS
@@ -133,18 +133,231 @@ jobs:
               # default
               ;;
           esac
-      
-      - name: Strip wireguard / tailscale build-tags
+
+      - name: Strip tags (AST patch) and print final init()
+        shell: bash
+        env:
+          STRIP_TAGS: with_wireguard,with_naive_outbound,with_tailscale
         run: |
           set -euo pipefail
           FILE=cmd/internal/build_libbox/main.go
-          sed -i \
-            -e 's/"with_wireguard",[[:space:]]*//g' \
-            -e '/memcTags.*with_tailscale/ s/^/\/\/ /' \
-            "$FILE"
-          grep -q '"with_wireguard"' "$FILE" && { echo "::error::wireguard tag still present"; exit 1; }
-          echo "✔️ sed patch applied to $FILE"
-          
+      
+          cat > /tmp/patch_tags.go <<'EOF'
+          package main
+      
+          import (
+            "bytes"
+            "fmt"
+            "go/ast"
+            "go/format"
+            "go/parser"
+            "go/token"
+            "os"
+            "strconv"
+            "strings"
+          )
+      
+          func main() {
+            if len(os.Args) != 2 {
+              fmt.Fprintln(os.Stderr, "usage: patch_tags <file.go>")
+              os.Exit(2)
+            }
+            path := os.Args[1]
+      
+            removeAny := map[string]bool{
+              "with_wireguard":      true,
+              "with_naive_outbound": true,
+              "with_tailscale":      true,
+            }
+            if env := strings.TrimSpace(os.Getenv("STRIP_TAGS")); env != "" {
+              removeAny = map[string]bool{}
+              for _, t := range strings.Split(env, ",") {
+                t = strings.TrimSpace(t)
+                if t != "" {
+                  removeAny[t] = true
+                }
+              }
+            }
+      
+            fset := token.NewFileSet()
+            f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+            if err != nil {
+              fmt.Fprintln(os.Stderr, "parse:", err)
+              os.Exit(1)
+            }
+      
+            isRemoveStringLit := func(e ast.Expr) bool {
+              bl, ok := e.(*ast.BasicLit)
+              if !ok || bl.Kind != token.STRING {
+                return false
+              }
+              s, err := strconv.Unquote(bl.Value)
+              if err != nil {
+                return false
+              }
+              return removeAny[s]
+            }
+      
+            isStringSliceType := func(t ast.Expr) bool {
+              at, ok := t.(*ast.ArrayType)
+              if !ok || at.Len != nil {
+                return false
+              }
+              id, ok := at.Elt.(*ast.Ident)
+              return ok && id.Name == "string"
+            }
+      
+            ast.Inspect(f, func(n ast.Node) bool {
+              if call, ok := n.(*ast.CallExpr); ok {
+                if fun, ok := call.Fun.(*ast.Ident); ok && fun.Name == "append" && len(call.Args) >= 2 {
+                  kept := []ast.Expr{call.Args[0]}
+                  for _, a := range call.Args[1:] {
+                    if isRemoveStringLit(a) {
+                      continue
+                    }
+                    kept = append(kept, a)
+                  }
+                  call.Args = kept
+                }
+      
+                if fun, ok := call.Fun.(*ast.Ident); ok && fun.Name == "filterTags" && len(call.Args) >= 2 {
+                  kept := []ast.Expr{call.Args[0]}
+                  for _, a := range call.Args[1:] {
+                    if isRemoveStringLit(a) {
+                      continue
+                    }
+                    kept = append(kept, a)
+                  }
+                  call.Args = kept
+                }
+              }
+      
+              if cl, ok := n.(*ast.CompositeLit); ok && cl.Type != nil && isStringSliceType(cl.Type) {
+                var kept []ast.Expr
+                for _, e := range cl.Elts {
+                  if isRemoveStringLit(e) {
+                    continue
+                  }
+                  kept = append(kept, e)
+                }
+                cl.Elts = kept
+              }
+      
+              return true
+            })
+      
+            var buf bytes.Buffer
+            if err := format.Node(&buf, fset, f); err != nil {
+              fmt.Fprintln(os.Stderr, "format:", err)
+              os.Exit(1)
+            }
+            if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
+              fmt.Fprintln(os.Stderr, "write:", err)
+              os.Exit(1)
+            }
+          }
+          EOF
+      
+          go build -o /tmp/patch_tags /tmp/patch_tags.go
+          /tmp/patch_tags "$FILE"
+      
+          TAGS="${STRIP_TAGS:-with_wireguard,with_naive_outbound,with_tailscale}"
+          IFS=',' read -r -a arr <<< "$TAGS"
+          for t in "${arr[@]}"; do
+            t="$(echo "$t" | xargs)"
+            [ -z "$t" ] && continue
+            if grep -q "\"$t\"" "$FILE"; then
+              echo "::error::$t tag still present in $FILE"
+              grep -n "\"$t\"" "$FILE" || true
+              exit 1
+            fi
+          done
+      
+          echo "✔️ AST patch applied to $FILE"
+          echo
+          echo "==== Patched func init() (final flags/tags) ===="
+          awk -v want=2 '
+            BEGIN { count=0; inside=0; depth=0 }
+      
+            /^[[:space:]]*func[[:space:]]+init[[:space:]]*\(\)[[:space:]]*{/ {
+              count++
+              if (count == want) { inside=1; depth=0 } else { inside=0 }
+            }
+      
+            inside {
+              print
+              line=$0
+              opens  = gsub(/{/, "{", line)
+              closes = gsub(/}/, "}", line)
+              depth += opens - closes
+              if (depth == 0) exit
+            }
+          ' "$FILE" | nl -ba
+
+      - name: Patch out Android legacy AAR (API 21) block if present
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="cmd/internal/build_libbox/main.go"
+      
+          if [[ ! -f "$FILE" ]]; then
+            echo "Skip: $FILE not found."
+            exit 0
+          fi
+      
+          if ! grep -qE 'libbox-legacy\.aar|AndroidAPI:\s*21|Build legacy variant' "$FILE"; then
+            echo "Skip: legacy block not detected in $FILE."
+            exit 0
+          fi
+      
+          python3 - <<'PY'
+          import re, pathlib, sys
+          p = pathlib.Path("cmd/internal/build_libbox/main.go")
+          s = p.read_text()
+      
+          pattern = re.compile(
+            r"""
+            \n[ \t]*//[ \t]*Build[ \t]+legacy[ \t]+variant[^\n]*\n
+            [\s\S]*?
+            \n[ \t]*buildAndroidVariant\([ \t]*AndroidBuildConfig\{\n
+            [\s\S]*?
+            \n[ \t]*\}[ \t]*,[ \t]*bindTarget\)[ \t]*\n
+            """,
+            re.VERBOSE
+          )
+      
+          s2, n = pattern.subn("\n", s, count=1)
+      
+          if n == 0:
+            pattern2 = re.compile(
+              r"""
+              \n[ \t]*buildAndroidVariant\([ \t]*AndroidBuildConfig\{\n
+              [\s\S]*?
+              OutputName:\s*"libbox-legacy\.aar",\n
+              [\s\S]*?
+              \n[ \t]*\}[ \t]*,[ \t]*bindTarget\)[ \t]*\n
+              """,
+              re.VERBOSE
+            )
+            s2, n2 = pattern2.subn("\n", s, count=1)
+            if n2 == 0:
+              print("Legacy markers found but patch pattern did not match; no changes made.", file=sys.stderr)
+              sys.exit(1)
+      
+          p.write_text(s2)
+          print("Patched legacy block removed:", p)
+          PY
+      
+          gofmt -w "$FILE" || true
+      
+          if grep -q 'libbox-legacy\.aar' "$FILE"; then
+            echo "::error::legacy AAR build still present after patch"
+            grep -n 'libbox-legacy\.aar' "$FILE" || true
+            exit 1
+          fi
+      
+          echo "✔ Removed Android API 21 legacy AAR block."
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -198,12 +411,22 @@ jobs:
         id: build_apk
         run: |
           set -eux
+          ls -alh
           CLIENT_DIR="${{ matrix.client_path }}"
-          AAR_FILE="${{ matrix.aar_name }}"
+          AAR_GLOB='${{ matrix.aar_name }}'
           
           echo "--> Moving .aar library to Android project..."
           mkdir -p "${CLIENT_DIR}/app/libs"
-          mv "${AAR_FILE}" "${CLIENT_DIR}/app/libs/"
+
+          mapfile -t aar_files < <(find . -type f -name "${AAR_GLOB}" -print)
+          if [ ${#aar_files[@]} -eq 0 ]; then
+            echo "ERROR: No AAR matched pattern: ${AAR_GLOB}"
+            exit 1
+          fi
+          echo "Matched AAR(s):"
+          printf ' - %s\n' "${aar_files[@]}"
+          
+          cp -v "${aar_files[@]}" "${CLIENT_DIR}/app/libs/"
           
           echo "--> Building APK with Gradle..."
           cd "${CLIENT_DIR}"
