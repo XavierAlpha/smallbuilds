@@ -113,7 +113,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.build_go_version }}
-          cache: false
+          check-latest: true
 
       - name: Build for ${{ matrix.repo }} - ${{ matrix.ref }} - ${{ matrix.os }}/${{ matrix.arch }}
         env:

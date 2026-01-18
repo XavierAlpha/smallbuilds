@@ -362,6 +362,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.build_go_version }}
+          check-latest: true
           cache-dependency-path: "**/go.sum"
 
       - name: Setup Android NDK
