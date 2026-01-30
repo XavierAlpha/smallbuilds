@@ -108,12 +108,32 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.prepare-assets.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - name: Extract Owner/Repo from URL
+        id: extract_repo
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO_URL="${{ matrix.repo_url }}"
+          OWNER_REPO="${REPO_URL#https://github.com/}"
+          OWNER_REPO="${OWNER_REPO%.git}"
+          echo "owner_repo=${OWNER_REPO}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout target repo
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ steps.extract_repo.outputs.owner_repo }}
+          ref: ${{ matrix.ref }}
+          path: ${{ env.DEFAULT_WORKSPACE_DIR }}/${{ matrix.repo }}
+          fetch-depth: 0
+          fetch-tags: true
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.build_go_version }}
           check-latest: true
+          cache-dependency-path: ${{ env.DEFAULT_WORKSPACE_DIR }}/${{ matrix.repo }}/**/go.sum
 
       - name: Build for ${{ matrix.repo }} - ${{ matrix.ref }} - ${{ matrix.os }}/${{ matrix.arch }}
         env:
@@ -129,16 +149,11 @@ jobs:
         run: |
           set -eux
           
-          echo "--> Setting up workspace and cloning source code..."
+          echo "--> Setting up workspace..."
           mkdir -p "${WORKSPACE_DIR}"
-          cd "${WORKSPACE_DIR}"
-          echo "Cloning repository from ${REPO_URL}..."
-          git clone "${REPO_URL}" "${REPO_NAME}"
-          cd "${REPO_NAME}"
+          cd "${WORKSPACE_DIR}/${REPO_NAME}"
           echo "--> Switched to directory: $(pwd)"
-          echo "--> Checking out ref: ${TARGET_REF}"
-          git checkout "${TARGET_REF}"
-          echo "--> Switched to ref '${TARGET_REF}'. Current commit: $(git rev-parse HEAD)"
+          echo "--> Current commit: $(git rev-parse HEAD)"
           
           echo "--> Gathering Git metadata..."
           REPO_SHORT_SHA=$(git rev-parse --short=7 HEAD)
