@@ -40,10 +40,12 @@ jobs:
           declare -A REPOS
           REPOS["sing-box"]="https://github.com/sagernet/sing-box.git;1.26;-X github.com/sagernet/sing-box/constant.Version=\${REPO_TAG} -checklinkname=0;with_gvisor,with_quic,with_utls,with_clash_api;./cmd/sing-box"
           REPOS["xray-core"]="https://github.com/XTLS/Xray-core.git;1.26;-X github.com/xtls/xray-core/core.build=\${REPO_SHORT_SHA};;./main"
+          REPOS["xray-core-custom"]="https://github.com/XavierAlpha/Xray-core.git;1.26;-X github.com/XavierAlpha/xray-core/core.build=\${REPO_SHORT_SHA};;./main"
 
           declare -A DEFAULT_REFS
           DEFAULT_REFS["sing-box"]="main,dev-next,main-next"
           DEFAULT_REFS["xray-core"]="main"
+          DEFAULT_REFS["xray-core-custom"]="main"
           DEFAULT_PLATS="linux/amd64,linux/arm64,windows/amd64"
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
