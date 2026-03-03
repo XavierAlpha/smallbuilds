@@ -29,7 +29,7 @@ jobs:
               "ndk_version": "r28",
               "jdk_version": "17",
               "client_path": "clients/android",
-              "gradle_task": ":app:assemblePlayRelease :app:assembleOtherRelease",
+              "gradle_task": ":app:assembleOtherRelease",
               "libbox_tags": "with_gvisor,with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0",
               "refs_default": ["main", "main-next", "dev-next"]
             },
@@ -40,7 +40,7 @@ jobs:
               "ndk_version": "r28",
               "jdk_version": "17",
               "client_path": "clients/android",
-              "gradle_task": ":app:assemblePlayRelease :app:assembleOtherRelease",
+              "gradle_task": ":app:assembleOtherRelease",
               "libbox_tags": "with_gvisor,with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0",
               "refs_default": ["main-next"]
             }
@@ -245,7 +245,6 @@ jobs:
 
           shopt -s nullglob
           APK_FILES=(
-            source/${{ matrix.client_path }}/app/build/outputs/apk/play/release/*.apk
             source/${{ matrix.client_path }}/app/build/outputs/apk/other/release/*.apk
           )
 
