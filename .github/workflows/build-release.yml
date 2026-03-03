@@ -3,8 +3,12 @@ name: Advanced Multi-Repo Build
 on:
   workflow_dispatch:
     inputs:
-      refs:      { description: "Comma-separated refs (e.g., main,v2.8.0,commit_sha)", default: "main,main-next,dev-next" }
-      platforms: { description: "Comma-separated platforms (e.g., linux/amd64,windows/amd64)", default: "linux/amd64,linux/arm64,windows/amd64" }
+      refs:
+        description: "Comma-separated refs (e.g., main,main-next,dev-next)"
+        default: "main,main-next,dev-next"
+      platforms:
+        description: "Comma-separated platforms (e.g., linux/amd64,windows/amd64)"
+        default: "linux/amd64,linux/arm64,windows/amd64"
   schedule:
     - cron: '0 0 * * *'
 
@@ -19,98 +23,134 @@ jobs:
     steps:
       - id: generate
         name: Generate and Validate Build Matrix
+        shell: bash
         run: |
-          set -e
-          FINAL_MATRIX_JSON="[]"
+          set -euo pipefail
 
-          # --- 配置区 ---
-          # 在这里集中管理所有仓库的配置，方便未来扩展。
-          #
-          # 格式说明:
-          #   每个仓库的配置是一个用分号(;)分隔的字符串。
-          #   顺序和含义如下:
-          #   1. Git仓库URL        (repo_url)
-          #   2. Go语言版本         (go_ver)
-          #   3. LDFLAGS模板        (ldflags) - 用于注入版本等信息，可使用 ${REPO_TAG}, ${REPO_SHORT_SHA} 等占位符。
-          #   4. Go构建标签(tags)    (tags) - 多个标签用逗号(,)分隔。
-          #   5. Go构建目标路径      (target) - 例如 "./" 或 "./cmd/app"。
-          #
-          # 注意：如果某一项没有值，请保留分号以作占位，例如 `...;ldflags_val;;target_val` 表示 tags 为空。
-          
-          declare -A REPOS
-          REPOS["sing-box"]="https://github.com/sagernet/sing-box.git;1.26;-X github.com/sagernet/sing-box/constant.Version=\${REPO_TAG} -checklinkname=0;with_gvisor,with_quic,with_utls,with_clash_api;./cmd/sing-box"
-          REPOS["xray-core"]="https://github.com/XTLS/Xray-core.git;1.26;-X github.com/xtls/xray-core/core.build=\${REPO_SHORT_SHA};;./main"
-          REPOS["xray-core-custom"]="https://github.com/XavierAlpha/Xray-core.git;1.26;-X github.com/XavierAlpha/xray-core/core.build=\${REPO_SHORT_SHA};;./main"
-
-          declare -A DEFAULT_REFS
-          DEFAULT_REFS["sing-box"]="main,dev-next,main-next"
-          DEFAULT_REFS["xray-core"]="main"
-          DEFAULT_REFS["xray-core-custom"]="main"
-          DEFAULT_PLATS="linux/amd64,linux/arm64,windows/amd64"
+          CONFIG_JSON='[
+            {
+              "repo": "sing-box",
+              "repo_url": "https://github.com/sagernet/sing-box.git",
+              "go_version": "1.26",
+              "ldflags_template": "-X github.com/sagernet/sing-box/constant.Version=${REPO_TAG}",
+              "tags": "with_gvisor,with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0",
+              "target": "./cmd/sing-box",
+              "cgo_enabled": "0",
+              "refs_default": ["main", "main-next", "dev-next"],
+              "platforms_default": ["linux/amd64", "linux/arm64", "windows/amd64"]
+            },
+            {
+              "repo": "xray-core",
+              "repo_url": "https://github.com/XTLS/Xray-core.git",
+              "go_version": "1.26",
+              "ldflags_template": "-X github.com/xtls/xray-core/core.build=${REPO_SHORT_SHA}",
+              "tags": "",
+              "target": "./main",
+              "cgo_enabled": "0",
+              "refs_default": ["main"],
+              "platforms_default": ["linux/amd64", "linux/arm64", "windows/amd64"]
+            },
+            {
+              "repo": "xray-core-custom",
+              "repo_url": "https://github.com/XavierAlpha/Xray-core.git",
+              "go_version": "1.26",
+              "ldflags_template": "-X github.com/XavierAlpha/xray-core/core.build=${REPO_SHORT_SHA}",
+              "tags": "",
+              "target": "./main",
+              "cgo_enabled": "0",
+              "refs_default": ["main"],
+              "platforms_default": ["linux/amd64", "linux/arm64", "windows/amd64"]
+            }
+          ]'
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            CHECK_REFS="${{ inputs.refs }}"
-            CHECK_PLATS="${{ inputs.platforms }}"
+            DISPATCH_REFS="${{ inputs.refs }}"
+            DISPATCH_PLATFORMS="${{ inputs.platforms }}"
           else
-            CHECK_REFS="" 
-            CHECK_PLATS="$DEFAULT_PLATS"
+            DISPATCH_REFS=""
+            DISPATCH_PLATFORMS=""
           fi
-          
-          PLATS_ARRAY_JSON=$(echo "$CHECK_PLATS" | jq -R 'split(",") | map(select(. != ""))')
 
-          for repo_name in "${!REPOS[@]}"; do
-            
-            IFS=';' read -r repo_url go_ver ldflags tags target <<< "${REPOS[$repo_name]}"
-          
-            if [[ "${{ github.event_name }}" != "workflow_dispatch" ]]; then
-              CHECK_REFS="${DEFAULT_REFS[$repo_name]}"
+          MATRIX='[]'
+          mapfile -t REPO_ROWS < <(echo "${CONFIG_JSON}" | jq -c '.[]')
+
+          for ROW in "${REPO_ROWS[@]}"; do
+            REPO="$(echo "${ROW}" | jq -r '.repo')"
+            REPO_URL="$(echo "${ROW}" | jq -r '.repo_url')"
+
+            if [[ -n "${DISPATCH_REFS}" ]]; then
+              REF_CSV="${DISPATCH_REFS}"
+            else
+              REF_CSV="$(echo "${ROW}" | jq -r '.refs_default | join(",")')"
             fi
-          
-            IFS=',' read -ra refs_to_check <<< "$CHECK_REFS"
 
-            for ref in "${refs_to_check[@]}"; do
-              echo "Checking if ref '$ref' exists in repo '$repo_name'..."
-              if git ls-remote --exit-code --heads --tags "$repo_url" "$ref" >/dev/null 2>&1 || \
-                 git ls-remote --exit-code "$repo_url" "$ref" | grep -q "commit"; then
-                 echo "  -> Ref '$ref' found. Adding combinations to matrix."
+            if [[ -n "${DISPATCH_PLATFORMS}" ]]; then
+              PLATFORM_CSV="${DISPATCH_PLATFORMS}"
+            else
+              PLATFORM_CSV="$(echo "${ROW}" | jq -r '.platforms_default | join(",")')"
+            fi
 
-                VALID_COMBOS=$(jq -n \
-                  --arg rn "$repo_name" --arg rurl "$repo_url" \
-                  --arg gv "$go_ver" --arg ld "$ldflags" \
-                  --arg tg "$tags" --arg tgt "$target" \
-                  --arg r "$ref" --argjson plats "$PLATS_ARRAY_JSON" \
-                  '
-                  $plats[] | . as $p | {
-                    repo: $rn, repo_url: $rurl, build_go_version: $gv,
-                    build_ldflags: $ld, build_tags: $tg, build_target: $tgt,
-                    ref: $r,
-                    os: ($p | split("/")[0]),
-                    arch: ($p | split("/")[1])
-                  }
-                  '
-                )
-          
-                FINAL_MATRIX_JSON=$(echo "$FINAL_MATRIX_JSON" | jq -c ". += $(echo "$VALID_COMBOS" | jq -s)")
-              else
-                echo "  -> Ref '$ref' NOT found. Skipping."
+            IFS=',' read -ra REFS <<< "${REF_CSV}"
+            IFS=',' read -ra PLATFORMS <<< "${PLATFORM_CSV}"
+
+            for REF in "${REFS[@]}"; do
+              REF="$(echo "${REF}" | xargs)"
+              [[ -z "${REF}" ]] && continue
+
+              if ! git ls-remote --exit-code --heads --tags "${REPO_URL}" "${REF}" >/dev/null 2>&1; then
+                echo "skip missing ref: ${REPO} ${REF}"
+                continue
               fi
+
+              for PLATFORM in "${PLATFORMS[@]}"; do
+                PLATFORM="$(echo "${PLATFORM}" | xargs)"
+                [[ -z "${PLATFORM}" ]] && continue
+
+                OS="${PLATFORM%%/*}"
+                ARCH="${PLATFORM##*/}"
+                if [[ "${OS}" == "${ARCH}" ]]; then
+                  echo "skip invalid platform: ${PLATFORM}"
+                  continue
+                fi
+
+                ENTRY="$(echo "${ROW}" | jq -c \
+                  --arg ref "${REF}" \
+                  --arg os "${OS}" \
+                  --arg arch "${ARCH}" \
+                  '{
+                    repo: .repo,
+                    repo_url: .repo_url,
+                    build_go_version: .go_version,
+                    build_ldflags: .ldflags_template,
+                    build_tags: .tags,
+                    build_target: .target,
+                    cgo_enabled: .cgo_enabled,
+                    ref: $ref,
+                    os: $os,
+                    arch: $arch
+                  }')"
+
+                MATRIX="$(echo "${MATRIX}" | jq -c ". + [${ENTRY}]")"
+              done
             done
           done
-          
-          echo "Final Generated Matrix:"
-          echo "$FINAL_MATRIX_JSON" | jq .
-          echo "matrix=$FINAL_MATRIX_JSON" >> "$GITHUB_OUTPUT"
+
+          if [[ "$(echo "${MATRIX}" | jq 'length')" -eq 0 ]]; then
+            echo "No build tasks were generated."
+            exit 1
+          fi
+
+          echo "matrix=${MATRIX}" >> "${GITHUB_OUTPUT}"
 
   build:
     needs: prepare-assets
-    name: 🛠️ Build ${{ matrix.repo }} | ${{ matrix.ref }} | ${{ matrix.os }}/${{ matrix.arch }}
+    name: Build ${{ matrix.repo }} | ${{ matrix.ref }} | ${{ matrix.os }}/${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJson(needs.prepare-assets.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v5
       - name: Extract Owner/Repo from URL
         id: extract_repo
         shell: bash
@@ -119,10 +159,10 @@ jobs:
           REPO_URL="${{ matrix.repo_url }}"
           OWNER_REPO="${REPO_URL#https://github.com/}"
           OWNER_REPO="${OWNER_REPO%.git}"
-          echo "owner_repo=${OWNER_REPO}" >> "$GITHUB_OUTPUT"
+          echo "owner_repo=${OWNER_REPO}" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout target repo
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: ${{ steps.extract_repo.outputs.owner_repo }}
           ref: ${{ matrix.ref }}
@@ -131,81 +171,93 @@ jobs:
           fetch-tags: true
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.build_go_version }}
           check-latest: true
           cache-dependency-path: ${{ env.DEFAULT_WORKSPACE_DIR }}/${{ matrix.repo }}/**/go.sum
 
       - name: Build for ${{ matrix.repo }} - ${{ matrix.ref }} - ${{ matrix.os }}/${{ matrix.arch }}
+        id: compile
+        shell: bash
         env:
-          REPO_NAME:        ${{ matrix.repo }}
-          REPO_URL:         ${{ matrix.repo_url }}
-          TARGET_REF:       ${{ matrix.ref }}
-          TARGET_OS:        ${{ matrix.os }}
-          TARGET_ARCH:      ${{ matrix.arch }}
-          WORKSPACE_DIR:    ${{ env.DEFAULT_WORKSPACE_DIR }}
-          BUILD_TAGS:       ${{ matrix.build_tags }}
-          BUILD_LDFLAGS:    ${{ matrix.build_ldflags }}
-          BUILD_TARGET:     ${{ matrix.build_target }}
+          REPO_NAME: ${{ matrix.repo }}
+          TARGET_REF: ${{ matrix.ref }}
+          TARGET_OS: ${{ matrix.os }}
+          TARGET_ARCH: ${{ matrix.arch }}
+          WORKSPACE_DIR: ${{ env.DEFAULT_WORKSPACE_DIR }}
+          BUILD_TAGS: ${{ matrix.build_tags }}
+          BUILD_LDFLAGS: ${{ matrix.build_ldflags }}
+          BUILD_TARGET: ${{ matrix.build_target }}
+          CGO_MODE: ${{ matrix.cgo_enabled }}
         run: |
-          set -eux
-          
-          echo "--> Setting up workspace..."
-          mkdir -p "${WORKSPACE_DIR}"
+          set -euo pipefail
+
           cd "${WORKSPACE_DIR}/${REPO_NAME}"
-          echo "--> Switched to directory: $(pwd)"
-          echo "--> Current commit: $(git rev-parse HEAD)"
-          
-          echo "--> Gathering Git metadata..."
-          REPO_SHORT_SHA=$(git rev-parse --short=7 HEAD)
-          REPO_LONG_SHA=$(git rev-parse HEAD)
-          REPO_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          
-          LDFLAGS_TEMPLATE="${BUILD_LDFLAGS}"
-          FINAL_LDFLAGS_TEMPLATE="${LDFLAGS_TEMPLATE} -s -w -buildid="
-          FINAL_LDFLAGS="${FINAL_LDFLAGS_TEMPLATE//\$\{REPO_TAG\}/$REPO_TAG}"
-          FINAL_LDFLAGS="${FINAL_LDFLAGS//\$\{REPO_SHORT_SHA\}/$REPO_SHORT_SHA}"
-          FINAL_LDFLAGS="${FINAL_LDFLAGS//\$\{REPO_LONG_SHA\}/$REPO_LONG_SHA}"
-          
-          echo "--> Preparing build arguments..."
+          REPO_SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+          REPO_LONG_SHA="$(git rev-parse HEAD)"
+          REPO_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [[ -z "${REPO_TAG}" ]]; then
+            REPO_TAG="$(git describe --tags --always --dirty)"
+          fi
+
+          LDFLAGS_SHARED_FALLBACK="-X internal/godebug.defaultGODEBUG=multipathtcp=0 -checklinkname=0"
+          FINAL_LDFLAGS="${BUILD_LDFLAGS:-}"
+          FINAL_LDFLAGS="${FINAL_LDFLAGS//\$\{REPO_TAG\}/${REPO_TAG}}"
+          FINAL_LDFLAGS="${FINAL_LDFLAGS//\$\{REPO_SHORT_SHA\}/${REPO_SHORT_SHA}}"
+          FINAL_LDFLAGS="${FINAL_LDFLAGS//\$\{REPO_LONG_SHA\}/${REPO_LONG_SHA}}"
+
+          if [[ "${REPO_NAME}" == "sing-box" ]]; then
+            if [[ -f "release/LDFLAGS" ]]; then
+              LDFLAGS_SHARED="$(tr -d '\r\n' < release/LDFLAGS)"
+            else
+              LDFLAGS_SHARED="${LDFLAGS_SHARED_FALLBACK}"
+            fi
+            FINAL_LDFLAGS="${FINAL_LDFLAGS} ${LDFLAGS_SHARED}"
+          fi
+
+          FINAL_LDFLAGS="$(echo "${FINAL_LDFLAGS}" | xargs)"
+          FINAL_LDFLAGS="${FINAL_LDFLAGS:+${FINAL_LDFLAGS} }-s -w -buildid="
+
           export GOOS="${TARGET_OS}"
           export GOARCH="${TARGET_ARCH}"
-          export CGO_ENABLED=0
-          
-          OUTPUT_NAME="${REPO_NAME}-${TARGET_REF}-${TARGET_OS}-${TARGET_ARCH}"
-          if [ "$GOOS" = "windows" ]; then
+          export CGO_ENABLED="${CGO_MODE}"
+
+          SAFE_REF="${TARGET_REF//\//_}"
+          SAFE_REF="${SAFE_REF//:/_}"
+          OUTPUT_NAME="${REPO_NAME}-${SAFE_REF}-${TARGET_OS}-${TARGET_ARCH}"
+          if [[ "${TARGET_OS}" == "windows" ]]; then
             OUTPUT_NAME="${OUTPUT_NAME}.exe"
           fi
-          OUTPUT_PATH="../${OUTPUT_NAME}"
-          
-          build_args=( -trimpath -buildvcs=false )
-          if [[ -n "$BUILD_TAGS" ]]; then
-            build_args+=( -tags "$BUILD_TAGS" )
+
+          mkdir -p "${GITHUB_WORKSPACE}/dist"
+          OUTPUT_PATH="${GITHUB_WORKSPACE}/dist/${OUTPUT_NAME}"
+
+          BUILD_ARGS=( -v -trimpath -buildvcs=false )
+          if [[ -n "${BUILD_TAGS}" ]]; then
+            BUILD_ARGS+=( -tags "${BUILD_TAGS}" )
           fi
-          if [[ -n "$FINAL_LDFLAGS" ]]; then
-            build_args+=( -ldflags "$FINAL_LDFLAGS" )
+          if [[ -n "${FINAL_LDFLAGS}" ]]; then
+            BUILD_ARGS+=( -ldflags "${FINAL_LDFLAGS}" )
           fi
-          build_args+=( -o "$OUTPUT_PATH" )
-          if [[ -n "$BUILD_TARGET" ]]; then
-            build_args+=( "$BUILD_TARGET" )
-          fi
-          
-          echo "--> Compiling..."
-          go mod tidy && go build "${build_args[@]}"
-          
-          echo "--> Build finished. Verifying artifact..."
-          cd ..
-          ls -al
+          BUILD_ARGS+=( -o "${OUTPUT_PATH}" "${BUILD_TARGET}" )
+
+          echo "::group::Final Build Flags (${REPO_NAME}/${TARGET_REF}/${TARGET_OS}-${TARGET_ARCH})"
+          cat <<EOF
+          build_tags: ${BUILD_TAGS:-<none>}
+          ldflags: ${FINAL_LDFLAGS}
+          EOF
+          echo "::endgroup::"
+
+          go build "${BUILD_ARGS[@]}"
+
+          echo "artifact_path=${OUTPUT_PATH}" >> "${GITHUB_OUTPUT}"
+          echo "artifact_name=${REPO_NAME}-${SAFE_REF}-${TARGET_OS}-${TARGET_ARCH}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.repo }}-${{ matrix.ref }}-${{ matrix.os }}-${{ matrix.arch }}
-          path: |
-            ${{ env.DEFAULT_WORKSPACE_DIR }}/${{ matrix.repo }}-${{ matrix.ref }}-${{ matrix.os }}-${{ matrix.arch }}
-            ${{ env.DEFAULT_WORKSPACE_DIR }}/${{ matrix.repo }}-${{ matrix.ref }}-${{ matrix.os }}-${{ matrix.arch }}.exe
+          name: ${{ steps.compile.outputs.artifact_name }}
+          path: ${{ steps.compile.outputs.artifact_path }}
           if-no-files-found: error
           retention-days: 1
-
-
