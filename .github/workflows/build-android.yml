@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       refs:
-        description: "Comma-separated refs for sing-box (e.g., main,main-next,dev-next)"
-        default: "main,main-next,dev-next"
+        description: "Comma-separated refs for sing-box (e.g., main,stable,testing)"
+        default: "oldstable,stable,testing"
   schedule:
     - cron: '0 0 * * *'
 
@@ -30,8 +30,9 @@ jobs:
               "jdk_version": "17",
               "client_path": "clients/android",
               "gradle_task": ":app:assembleOtherRelease",
+              "android_client_repo_url": "https://github.com/SagerNet/sing-box-for-android.git",
               "libbox_tags": "with_gvisor,with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0",
-              "refs_default": ["main", "main-next", "dev-next"]
+              "refs_default": ["oldstable", "stable", "testing"]
             },
             {
               "repo": "sing-box-custom",
@@ -41,8 +42,9 @@ jobs:
               "jdk_version": "17",
               "client_path": "clients/android",
               "gradle_task": ":app:assembleOtherRelease",
+              "android_client_repo_url": "https://github.com/XavierAlpha/sing-box-for-android.git",
               "libbox_tags": "with_gvisor,with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0",
-              "refs_default": ["main-next"]
+              "refs_default": ["oldstable", "stable"]
             }
           ]'
 
@@ -70,13 +72,45 @@ jobs:
               REF="$(echo "${REF}" | xargs)"
               [[ -z "${REF}" ]] && continue
 
+              if ! echo "${ROW}" | jq -e --arg ref "${REF}" '.refs_default | index($ref)' >/dev/null; then
+                echo "skip unsupported ref: ${REPO} ${REF}"
+                continue
+              fi
+
+              ANDROID_CLIENT_REPO_URL="$(echo "${ROW}" | jq -r '.android_client_repo_url')"
+              case "${REF}" in
+                testing)
+                  ANDROID_CLIENT_REF="dev"
+                  ANDROID_API="23"
+                  ;;
+                stable)
+                  ANDROID_CLIENT_REF="main"
+                  ANDROID_API="23"
+                  ;;
+                oldstable)
+                  ANDROID_CLIENT_REF="stable"
+                  ANDROID_API="21"
+                  ;;
+                *)
+                  echo "skip unsupported ref mapping: ${REPO} ${REF}"
+                  continue
+                  ;;
+              esac
+
               if ! git ls-remote --exit-code --heads --tags "${REPO_URL}" "${REF}" >/dev/null 2>&1; then
                 echo "skip missing ref: ${REPO} ${REF}"
                 continue
               fi
 
+              if ! git ls-remote --exit-code --heads --tags "${ANDROID_CLIENT_REPO_URL}" "${ANDROID_CLIENT_REF}" >/dev/null 2>&1; then
+                echo "skip missing android client ref: ${REPO} ${REF} -> ${ANDROID_CLIENT_REF}"
+                continue
+              fi
+
               ENTRY="$(echo "${ROW}" | jq -c \
                 --arg ref "${REF}" \
+                --arg android_client_ref "${ANDROID_CLIENT_REF}" \
+                --arg android_api "${ANDROID_API}" \
                 '{
                   repo: .repo,
                   repo_url: .repo_url,
@@ -86,7 +120,10 @@ jobs:
                   client_path: .client_path,
                   gradle_task: .gradle_task,
                   libbox_tags: .libbox_tags,
-                  ref: $ref
+                  ref: $ref,
+                  android_client_repo_url: .android_client_repo_url,
+                  android_client_ref: $android_client_ref,
+                  android_api: ($android_api | tonumber)
                 }')"
 
               MATRIX="$(echo "${MATRIX}" | jq -c ". + [${ENTRY}]")"
@@ -129,24 +166,16 @@ jobs:
           fetch-tags: true
           submodules: recursive
 
-      - name: Align Android client branch
-        if: ${{ steps.extract_repo.outputs.owner_repo == 'SagerNet/sing-box' || steps.extract_repo.outputs.owner_repo == 'XavierAlpha/sing-box' }}
+      - name: Prepare Android client source
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
-          case "${{ matrix.ref }}" in
-            dev-next)
-              git -C clients/android fetch origin dev
-              git -C clients/android checkout dev
-              ;;
-            main-next|main)
-              git -C clients/android fetch origin main
-              git -C clients/android checkout main
-              ;;
-            *)
-              ;;
-          esac
+          git submodule update --init --recursive clients/android
+          git -C clients/android remote set-url origin "${{ matrix.android_client_repo_url }}"
+          git -C clients/android fetch --depth=1 origin "${{ matrix.android_client_ref }}"
+          git -C clients/android checkout --detach "origin/${{ matrix.android_client_ref }}"
+          git -C clients/android submodule update --init --recursive
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -177,7 +206,7 @@ jobs:
           go install -v github.com/sagernet/gomobile/cmd/gobind@latest
           echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
 
-      - name: Build Custom libbox.aar (API 23 only)
+      - name: Build Custom libbox.aar
         shell: bash
         working-directory: source
         env:
@@ -198,6 +227,8 @@ jobs:
 
           echo "::group::Final Build Flags (${{ matrix.repo }}/${{ matrix.ref }}/libbox)"
           cat <<EOF
+          android_client: ${{ matrix.android_client_repo_url }} @ ${{ matrix.android_client_ref }}
+          android_api: ${{ matrix.android_api }}
           build_tags: ${{ matrix.libbox_tags }}
           ldflags: ${FINAL_LDFLAGS}
           EOF
@@ -206,7 +237,7 @@ jobs:
           go run ./cmd/internal/build gomobile bind -v \
             -o libbox.aar \
             -target android \
-            -androidapi 23 \
+            -androidapi ${{ matrix.android_api }} \
             -javapkg=io.nekohasekai \
             -libname=box \
             -trimpath \

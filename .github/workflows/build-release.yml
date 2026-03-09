@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       refs:
-        description: "Comma-separated refs (e.g., main,main-next,dev-next)"
-        default: "main,main-next,dev-next"
+        description: "Comma-separated refs (e.g., main,stable,testing)"
+        default: "main,oldstable,stable,testing"
       platforms:
         description: "Comma-separated platforms (e.g., linux/amd64,windows/amd64)"
         default: "linux/amd64,linux/arm64,windows/amd64"
@@ -36,7 +36,7 @@ jobs:
               "tags": "with_gvisor,with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0",
               "target": "./cmd/sing-box",
               "cgo_enabled": "0",
-              "refs_default": ["main", "main-next", "dev-next"],
+              "refs_default": ["oldstable", "stable", "testing"],
               "platforms_default": ["linux/amd64", "linux/arm64", "windows/amd64"]
             },
             {
@@ -44,17 +44,6 @@ jobs:
               "repo_url": "https://github.com/XTLS/Xray-core.git",
               "go_version": "1.26",
               "ldflags_template": "-X github.com/xtls/xray-core/core.build=${REPO_SHORT_SHA}",
-              "tags": "",
-              "target": "./main",
-              "cgo_enabled": "0",
-              "refs_default": ["main"],
-              "platforms_default": ["linux/amd64", "linux/arm64", "windows/amd64"]
-            },
-            {
-              "repo": "xray-core-custom",
-              "repo_url": "https://github.com/XavierAlpha/Xray-core.git",
-              "go_version": "1.26",
-              "ldflags_template": "-X github.com/XavierAlpha/xray-core/core.build=${REPO_SHORT_SHA}",
               "tags": "",
               "target": "./main",
               "cgo_enabled": "0",
@@ -96,6 +85,11 @@ jobs:
             for REF in "${REFS[@]}"; do
               REF="$(echo "${REF}" | xargs)"
               [[ -z "${REF}" ]] && continue
+
+              if ! echo "${ROW}" | jq -e --arg ref "${REF}" '.refs_default | index($ref)' >/dev/null; then
+                echo "skip unsupported ref: ${REPO} ${REF}"
+                continue
+              fi
 
               if ! git ls-remote --exit-code --heads --tags "${REPO_URL}" "${REF}" >/dev/null 2>&1; then
                 echo "skip missing ref: ${REPO} ${REF}"
