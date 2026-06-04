@@ -191,17 +191,39 @@ jobs:
           REPO_SHORT_SHA="$(git rev-parse --short=7 HEAD)"
           REPO_LONG_SHA="$(git rev-parse HEAD)"
           REPO_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-          if [[ -z "${REPO_TAG}" ]]; then
-            REPO_TAG="$(git describe --tags --always --dirty)"
+
+          if [[ "${REPO_NAME}" == "sing-box" ]]; then
+            if [[ ! -f "cmd/internal/read_tag/main.go" ]]; then
+              echo "Missing sing-box read_tag helper at ${REPO_LONG_SHA}" >&2
+              exit 1
+            fi
+            case "${TARGET_REF}" in
+              testing)
+                REPO_TAG="$(go run ./cmd/internal/read_tag --nightly)"
+                ;;
+              oldstable|stable)
+                REPO_TAG="$(go run ./cmd/internal/read_tag)"
+                ;;
+              *)
+                echo "Unsupported sing-box ref: ${TARGET_REF}" >&2
+                exit 1
+                ;;
+            esac
+            REPO_TAG="${REPO_TAG%-dirty}"
+            REPO_TAG="${REPO_TAG#v}"
+            if [[ -z "${REPO_TAG}" || "${REPO_TAG}" == "unknown" ]]; then
+              echo "No tag version found for sing-box at ${REPO_LONG_SHA}" >&2
+              exit 1
+            fi
           fi
 
-          LDFLAGS_SHARED_FALLBACK="-X internal/godebug.defaultGODEBUG=multipathtcp=0 -checklinkname=0"
           FINAL_LDFLAGS="${BUILD_LDFLAGS:-}"
           FINAL_LDFLAGS="${FINAL_LDFLAGS//\$\{REPO_TAG\}/${REPO_TAG}}"
           FINAL_LDFLAGS="${FINAL_LDFLAGS//\$\{REPO_SHORT_SHA\}/${REPO_SHORT_SHA}}"
           FINAL_LDFLAGS="${FINAL_LDFLAGS//\$\{REPO_LONG_SHA\}/${REPO_LONG_SHA}}"
 
           if [[ "${REPO_NAME}" == "sing-box" ]]; then
+            LDFLAGS_SHARED_FALLBACK="-X internal/godebug.defaultGODEBUG=multipathtcp=0 -checklinkname=0"
             if [[ -f "release/LDFLAGS" ]]; then
               LDFLAGS_SHARED="$(tr -d '\r\n' < release/LDFLAGS)"
             else
@@ -239,8 +261,11 @@ jobs:
           echo "::group::Final Build Flags (${REPO_NAME}/${TARGET_REF}/${TARGET_OS}-${TARGET_ARCH})"
           cat <<EOF
           build_tags: ${BUILD_TAGS:-<none>}
-          ldflags: ${FINAL_LDFLAGS}
           EOF
+          if [[ -n "${REPO_TAG}" ]]; then
+            echo "          repo_tag: ${REPO_TAG}"
+          fi
+          echo "          ldflags: ${FINAL_LDFLAGS}"
           echo "::endgroup::"
 
           go build "${BUILD_ARGS[@]}"
