@@ -86,13 +86,28 @@ jobs:
               REF="$(echo "${REF}" | xargs)"
               [[ -z "${REF}" ]] && continue
 
-              if ! echo "${ROW}" | jq -e --arg ref "${REF}" '.refs_default | index($ref)' >/dev/null; then
-                echo "skip unsupported ref: ${REPO} ${REF}"
-                continue
-              fi
+              REF_KIND=""
+              CHECKOUT_REF="${REF}"
+              TAG_REF="${REF#refs/tags/}"
+              TAG_REF="${TAG_REF#tags/}"
 
-              if ! git ls-remote --exit-code --heads --tags "${REPO_URL}" "${REF}" >/dev/null 2>&1; then
-                echo "skip missing ref: ${REPO} ${REF}"
+              if echo "${ROW}" | jq -e --arg ref "${REF}" '.refs_default | index($ref)' >/dev/null; then
+                if git ls-remote --exit-code --heads "${REPO_URL}" "${REF}" >/dev/null 2>&1; then
+                  REF_KIND="branch"
+                elif git ls-remote --exit-code --refs --tags "${REPO_URL}" "refs/tags/${TAG_REF}" >/dev/null 2>&1; then
+                  REF="${TAG_REF}"
+                  REF_KIND="tag"
+                  CHECKOUT_REF="refs/tags/${REF}"
+                else
+                  echo "skip missing ref: ${REPO} ${REF}"
+                  continue
+                fi
+              elif git ls-remote --exit-code --refs --tags "${REPO_URL}" "refs/tags/${TAG_REF}" >/dev/null 2>&1; then
+                REF="${TAG_REF}"
+                REF_KIND="tag"
+                CHECKOUT_REF="refs/tags/${REF}"
+              else
+                echo "skip unsupported ref: ${REPO} ${REF}"
                 continue
               fi
 
@@ -109,6 +124,8 @@ jobs:
 
                 ENTRY="$(echo "${ROW}" | jq -c \
                   --arg ref "${REF}" \
+                  --arg ref_kind "${REF_KIND}" \
+                  --arg checkout_ref "${CHECKOUT_REF}" \
                   --arg os "${OS}" \
                   --arg arch "${ARCH}" \
                   '{
@@ -120,6 +137,8 @@ jobs:
                     build_target: .target,
                     cgo_enabled: .cgo_enabled,
                     ref: $ref,
+                    ref_kind: $ref_kind,
+                    checkout_ref: $checkout_ref,
                     os: $os,
                     arch: $arch
                   }')"
@@ -159,7 +178,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: ${{ steps.extract_repo.outputs.owner_repo }}
-          ref: ${{ matrix.ref }}
+          ref: ${{ matrix.checkout_ref }}
           path: ${{ env.DEFAULT_WORKSPACE_DIR }}/${{ matrix.repo }}
           fetch-depth: 0
           fetch-tags: true
@@ -177,6 +196,7 @@ jobs:
         env:
           REPO_NAME: ${{ matrix.repo }}
           TARGET_REF: ${{ matrix.ref }}
+          TARGET_REF_KIND: ${{ matrix.ref_kind }}
           TARGET_OS: ${{ matrix.os }}
           TARGET_ARCH: ${{ matrix.arch }}
           WORKSPACE_DIR: ${{ env.DEFAULT_WORKSPACE_DIR }}
@@ -197,18 +217,22 @@ jobs:
               echo "Missing sing-box read_tag helper at ${REPO_LONG_SHA}" >&2
               exit 1
             fi
-            case "${TARGET_REF}" in
-              testing)
-                REPO_TAG="$(go run ./cmd/internal/read_tag --nightly)"
-                ;;
-              oldstable|stable)
-                REPO_TAG="$(go run ./cmd/internal/read_tag)"
-                ;;
-              *)
-                echo "Unsupported sing-box ref: ${TARGET_REF}" >&2
-                exit 1
-                ;;
-            esac
+            if [[ "${TARGET_REF_KIND}" == "tag" ]]; then
+              REPO_TAG="${TARGET_REF}"
+            else
+              case "${TARGET_REF}" in
+                testing)
+                  REPO_TAG="$(go run ./cmd/internal/read_tag --nightly)"
+                  ;;
+                oldstable|stable)
+                  REPO_TAG="$(go run ./cmd/internal/read_tag)"
+                  ;;
+                *)
+                  echo "Unsupported sing-box branch ref: ${TARGET_REF}" >&2
+                  exit 1
+                  ;;
+              esac
+            fi
             REPO_TAG="${REPO_TAG%-dirty}"
             REPO_TAG="${REPO_TAG#v}"
             if [[ -z "${REPO_TAG}" || "${REPO_TAG}" == "unknown" ]]; then
