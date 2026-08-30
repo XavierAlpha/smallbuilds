@@ -25,7 +25,7 @@ jobs:
             {
               "repo": "sing-box",
               "repo_url": "https://github.com/SagerNet/sing-box.git",
-              "go_version": "1.26",
+              "go_version": "1.27",
               "ndk_version": "r28",
               "jdk_version": "17",
               "client_path": "clients/android",
@@ -37,7 +37,7 @@ jobs:
             {
               "repo": "sing-box-custom",
               "repo_url": "https://github.com/XavierAlpha/sing-box.git",
-              "go_version": "1.26",
+              "go_version": "1.27",
               "ndk_version": "r28",
               "jdk_version": "17",
               "client_path": "clients/android",

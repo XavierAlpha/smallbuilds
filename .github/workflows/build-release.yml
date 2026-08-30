@@ -31,7 +31,7 @@ jobs:
             {
               "repo": "sing-box",
               "repo_url": "https://github.com/sagernet/sing-box.git",
-              "go_version": "1.26",
+              "go_version": "1.27",
               "ldflags_template": "-X github.com/sagernet/sing-box/constant.Version=${REPO_TAG}",
               "tags": "with_gvisor,with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0",
               "target": "./cmd/sing-box",
@@ -42,7 +42,7 @@ jobs:
             {
               "repo": "xray-core",
               "repo_url": "https://github.com/XTLS/Xray-core.git",
-              "go_version": "1.26",
+              "go_version": "1.27",
               "ldflags_template": "-X github.com/xtls/xray-core/core.build=${REPO_SHORT_SHA}",
               "tags": "",
               "target": "./main",
