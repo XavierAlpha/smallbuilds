@@ -44,7 +44,7 @@ jobs:
               "gradle_task": ":app:assembleOtherRelease",
               "android_client_repo_url": "https://github.com/XavierAlpha/sing-box-for-android.git",
               "libbox_tags": "with_gvisor,with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0",
-              "refs_default": ["oldstable", "stable"]
+              "refs_default": ["stable"]
             }
           ]'
 
