@@ -247,7 +247,7 @@ jobs:
           FINAL_LDFLAGS="${FINAL_LDFLAGS//\$\{REPO_LONG_SHA\}/${REPO_LONG_SHA}}"
 
           if [[ "${REPO_NAME}" == "sing-box" ]]; then
-            LDFLAGS_SHARED_FALLBACK="-X internal/godebug.defaultGODEBUG=multipathtcp=0 -checklinkname=0"
+            LDFLAGS_SHARED_FALLBACK="-X runtime.godebugDefault=multipathtcp=0 -checklinkname=0"
             if [[ -f "release/LDFLAGS" ]]; then
               LDFLAGS_SHARED="$(tr -d '\r\n' < release/LDFLAGS)"
             else
@@ -273,7 +273,7 @@ jobs:
           mkdir -p "${GITHUB_WORKSPACE}/dist"
           OUTPUT_PATH="${GITHUB_WORKSPACE}/dist/${OUTPUT_NAME}"
 
-          BUILD_ARGS=( -v -trimpath -buildvcs=false )
+          BUILD_ARGS=( -v -trimpath )
           if [[ -n "${BUILD_TAGS}" ]]; then
             BUILD_ARGS+=( -tags "${BUILD_TAGS}" )
           fi
