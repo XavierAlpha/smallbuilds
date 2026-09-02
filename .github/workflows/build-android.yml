@@ -31,8 +31,20 @@ jobs:
               "client_path": "clients/android",
               "gradle_task": ":app:assembleOtherRelease",
               "android_client_repo_url": "https://github.com/SagerNet/sing-box-for-android.git",
+              "libbox_tags": "with_gvisor,with_quic,with_utls,badlinkname,tfogo_checklinkname0",
+              "refs_default": ["stable", "testing"]
+            },
+            {
+              "repo": "sing-box",
+              "repo_url": "https://github.com/SagerNet/sing-box.git",
+              "go_version": "1.27",
+              "ndk_version": "r28",
+              "jdk_version": "17",
+              "client_path": "clients/android",
+              "gradle_task": ":app:assembleOtherRelease",
+              "android_client_repo_url": "https://github.com/SagerNet/sing-box-for-android.git",
               "libbox_tags": "with_gvisor,with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0",
-              "refs_default": ["oldstable", "stable", "testing"]
+              "refs_default": ["oldstable"]
             },
             {
               "repo": "sing-box-custom",
@@ -228,22 +240,27 @@ jobs:
                   VERSION="$(go run ./cmd/internal/read_tag)"
                   ;;
                 *)
-                  echo "Unsupported sing-box branch ref: ${{ matrix.ref }}" >&2
+                  echo "::error title=Unsupported sing-box branch::Unsupported branch ref: ${{ matrix.ref }}"
                   exit 1
                   ;;
               esac
             fi
           else
-            echo "Missing sing-box read_tag helper at $(git rev-parse HEAD)" >&2
-            exit 1
+            echo "::warning title=Using fallback version resolution::Missing sing-box read_tag helper at commit $(git rev-parse HEAD); falling back to nearest Git tag: ${REPO_TAG:-<none>}"
           fi
           if [[ -z "${VERSION}" || "${VERSION}" == "unknown" ]]; then
-            echo "No tag version found for ${{ matrix.repo }} at $(git rev-parse HEAD)" >&2
+            echo "::error title=Version resolution failed::No tag version found for ${{ matrix.repo }} at commit $(git rev-parse HEAD)"
             exit 1
           fi
           VERSION="${VERSION%-dirty}"
           VERSION="${VERSION#v}"
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          if [[ "${VERSION}" == *"-${SHORT_SHA}" ]]; then
+            echo "::notice title=Normalize source version::Removing commit suffix -${SHORT_SHA} from ${VERSION}"
+            VERSION="${VERSION%-${SHORT_SHA}}"
+          fi
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "::notice title=Resolved sing-box version::${VERSION}"
 
       - name: Prepare Android client source
         shell: bash

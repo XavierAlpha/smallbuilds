@@ -208,37 +208,41 @@ jobs:
           set -euo pipefail
 
           cd "${WORKSPACE_DIR}/${REPO_NAME}"
-          REPO_SHORT_SHA="$(git rev-parse --short=7 HEAD)"
           REPO_LONG_SHA="$(git rev-parse HEAD)"
+          REPO_SHORT_SHA="$(git rev-parse --short HEAD)"
           REPO_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-
           if [[ "${REPO_NAME}" == "sing-box" ]]; then
-            if [[ ! -f "cmd/internal/read_tag/main.go" ]]; then
-              echo "Missing sing-box read_tag helper at ${REPO_LONG_SHA}" >&2
-              exit 1
-            fi
-            if [[ "${TARGET_REF_KIND}" == "tag" ]]; then
-              REPO_TAG="${TARGET_REF}"
+            if [[ -f "cmd/internal/read_tag/main.go" ]]; then
+              if [[ "${TARGET_REF_KIND}" == "tag" ]]; then
+                REPO_TAG="${TARGET_REF}"
+              else
+                case "${TARGET_REF}" in
+                  testing)
+                    REPO_TAG="$(go run ./cmd/internal/read_tag --nightly)"
+                    ;;
+                  oldstable|stable)
+                    REPO_TAG="$(go run ./cmd/internal/read_tag)"
+                    ;;
+                  *)
+                    echo "::error title=Unsupported sing-box branch::Unsupported branch ref: ${TARGET_REF}"
+                    exit 1
+                    ;;
+                esac
+              fi
             else
-              case "${TARGET_REF}" in
-                testing)
-                  REPO_TAG="$(go run ./cmd/internal/read_tag --nightly)"
-                  ;;
-                oldstable|stable)
-                  REPO_TAG="$(go run ./cmd/internal/read_tag)"
-                  ;;
-                *)
-                  echo "Unsupported sing-box branch ref: ${TARGET_REF}" >&2
-                  exit 1
-                  ;;
-              esac
+              echo "::warning title=Using fallback version resolution::Missing sing-box read_tag helper at commit ${REPO_LONG_SHA}; falling back to nearest Git tag: ${REPO_TAG:-<none>}"
+            fi
+            if [[ -z "${REPO_TAG}" || "${REPO_TAG}" == "unknown" ]]; then
+              echo "::error title=Version resolution failed::No tag version found for sing-box at commit ${REPO_LONG_SHA}"
+              exit 1
             fi
             REPO_TAG="${REPO_TAG%-dirty}"
             REPO_TAG="${REPO_TAG#v}"
-            if [[ -z "${REPO_TAG}" || "${REPO_TAG}" == "unknown" ]]; then
-              echo "No tag version found for sing-box at ${REPO_LONG_SHA}" >&2
-              exit 1
+            if [[ "${REPO_TAG}" == *"-${REPO_SHORT_SHA}" ]]; then
+              echo "::notice title=Normalize source version::Removing commit suffix -${REPO_SHORT_SHA} from ${REPO_TAG}"
+              REPO_TAG="${REPO_TAG%-${REPO_SHORT_SHA}}"
             fi
+            echo "::notice title=Resolved sing-box version::${REPO_TAG}"
           fi
 
           FINAL_LDFLAGS="${BUILD_LDFLAGS:-}"
